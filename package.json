@@ -47,6 +47,9 @@
     "typecheck": "tsc --noEmit",
     "prepare": "simple-git-hooks"
   },
+  "dependencies": {
+    "node-fetch": "^3.3.2"
+  },
   "devDependencies": {
     "@antfu/eslint-config": "^2.4.0",
     "@antfu/ni": "^0.21.12",
