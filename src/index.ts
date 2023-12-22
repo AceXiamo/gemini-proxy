@@ -52,5 +52,5 @@ function bodyFromRequest(req: http.IncomingMessage) {
 }
 
 server.listen(80, () => {
-  console.log('Server listening on port 3000')
+  console.log('Server listening on port 80')
 })
