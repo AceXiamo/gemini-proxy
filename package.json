@@ -45,8 +45,7 @@
     "start": "esno src/index.ts",
     "test": "vitest",
     "typecheck": "tsc --noEmit",
-    "prepare": "simple-git-hooks",
-    "install": "node ./dist/index.mjs"
+    "prepare": "simple-git-hooks"
   },
   "dependencies": {
     "node-fetch": "^3.3.2"
