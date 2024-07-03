@@ -4,7 +4,12 @@ import fetch from 'node-fetch'
 const API = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=`
 
 const server = http.createServer(async (req, res) => {
-  res.writeHead(200, { 'Content-Type': 'application/json' })
+  res.writeHead(200, {
+    'Content-Type': 'application/json',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+  })
   if (req.method !== 'POST') {
     sendErr(res, '💣 Only POST method allowed!', 405)
     return
