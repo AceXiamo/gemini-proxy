@@ -1,7 +1,7 @@
 import http from 'node:http';
 import fetch from 'node-fetch';
 
-const API = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=`;
+const API = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=`;
 const server = http.createServer(async (req, res) => {
   res.writeHead(200, {
     "Content-Type": "application/json",

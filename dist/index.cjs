@@ -8,7 +8,7 @@ function _interopDefaultCompat (e) { return e && typeof e === 'object' && 'defau
 const http__default = /*#__PURE__*/_interopDefaultCompat(http);
 const fetch__default = /*#__PURE__*/_interopDefaultCompat(fetch);
 
-const API = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=`;
+const API = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=`;
 const server = http__default.createServer(async (req, res) => {
   res.writeHead(200, {
     "Content-Type": "application/json",
