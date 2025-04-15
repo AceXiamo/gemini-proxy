@@ -39,21 +39,33 @@ const server = http.createServer(async (req, res) => {
         sendErr(res, '\u{1F4A3} Missing or invalid "messages" array in request body!', 400);
         return;
       }
-      let geminiContents;
+      let conversionResult;
       try {
-        geminiContents = await convertOpenAIMessagesToGeminiContents(bodyJSON.messages);
+        conversionResult = await convertOpenAIMessagesToGeminiContents(bodyJSON.messages);
       } catch (conversionError) {
         console.error("Error during message conversion:", conversionError);
         const errorMessage = conversionError instanceof Error ? conversionError.message : "Error processing message content";
         sendErr(res, `\u{1F4A3} ${errorMessage}`, 400);
         return;
       }
-      geminiContents = geminiContents.filter((content) => content !== null);
-      const geminiBody = JSON.stringify({
+      if (!conversionResult || conversionResult.contents === null) {
+        sendErr(res, "\u{1F4A3} Failed to convert message content", 500);
+        return;
+      }
+      const geminiContents = conversionResult.contents;
+      const imageProcessed = conversionResult.imageProcessed;
+      const requestBodyToGemini = {
         contents: geminiContents
-        // TODO: Optionally map other parameters like temperature, max_tokens
-        // generationConfig: { ... }
-      });
+      };
+      if (imageProcessed) {
+        console.log("Image processed, adding default generationConfig with responseModalities.");
+        requestBodyToGemini.generationConfig = { responseModalities: ["TEXT", "IMAGE"] };
+      }
+      if (bodyJSON.gemini_generation_config) {
+        console.log("User provided gemini_generation_config, overriding default.");
+        requestBodyToGemini.generationConfig = bodyJSON.gemini_generation_config;
+      }
+      const geminiBody = JSON.stringify(requestBodyToGemini);
       const geminiUrl = `${BASE_API}/${model}:generateContent?key=${apiKey}`;
       const result2 = await fetch(geminiUrl, {
         method: "POST",
@@ -148,6 +160,7 @@ function bodyFromRequest(req) {
   });
 }
 async function convertOpenAIMessagesToGeminiContents(messages) {
+  let imageProcessedOverall = false;
   const contentPromises = messages.map(async (message) => {
     let role = "user";
     if (message.role === "assistant")
@@ -174,6 +187,7 @@ async function convertOpenAIMessagesToGeminiContents(messages) {
           console.log(`Successfully fetched and encoded image. MimeType: ${mimeType}, Base64 Length: ${imageBase64.length}`);
           parts.push({ text: textContent });
           parts.push({ inlineData: { mimeType, data: imageBase64 } });
+          imageProcessedOverall = true;
         } catch (error) {
           console.error(`Error processing image URL ${imageUrl}:`, error);
           return null;
@@ -204,7 +218,8 @@ async function convertOpenAIMessagesToGeminiContents(messages) {
     }
   });
   const settledContents = await Promise.all(contentPromises);
-  return settledContents.filter((content) => content !== null);
+  const finalContents = settledContents.filter((content) => content !== null);
+  return { contents: finalContents, imageProcessed: imageProcessedOverall };
 }
 server.listen(80, () => {
   console.log("Server listening on port 80");

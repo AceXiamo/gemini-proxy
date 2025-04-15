@@ -73,10 +73,10 @@ const server = http.createServer(async (req, res) => {
         return
       }
       // --- Conversion needs to be async now ---
-      let geminiContents: GeminiContent[]
+      let conversionResult: { contents: GeminiContent[] | null, imageProcessed: boolean }
       try {
         // Use Promise.all because convertOpenAIMessagesToGeminiContents is now async
-        geminiContents = await convertOpenAIMessagesToGeminiContents(bodyJSON.messages)
+        conversionResult = await convertOpenAIMessagesToGeminiContents(bodyJSON.messages)
       }
       catch (conversionError: any) {
         console.error('Error during message conversion:', conversionError)
@@ -86,14 +86,36 @@ const server = http.createServer(async (req, res) => {
         return
       }
       // Filter out any null results from failed conversions
-      geminiContents = geminiContents.filter(content => content !== null)
+      // Handle case where conversionResult itself might be problematic, though the catch should handle errors
+      if (!conversionResult || conversionResult.contents === null) {
+        // Error already sent in catch block or no valid content produced
+        // We might log here, but likely already handled.
+        sendErr(res, '💣 Failed to convert message content', 500) // Or use error from catch
+        return
+      }
+
+      const geminiContents = conversionResult.contents
+      const imageProcessed = conversionResult.imageProcessed
       // -------------------------------------
 
-      const geminiBody = JSON.stringify({
+      // Base structure for the request body to Gemini
+      const requestBodyToGemini: any = {
         contents: geminiContents,
-        // TODO: Optionally map other parameters like temperature, max_tokens
-        // generationConfig: { ... }
-      })
+      }
+
+      // Automatically add generationConfig if an image was processed
+      if (imageProcessed) {
+        console.log('Image processed, adding default generationConfig with responseModalities.')
+        requestBodyToGemini.generationConfig = { responseModalities: ['TEXT', 'IMAGE'] }
+      }
+
+      // Allow user to override/provide their own generationConfig
+      if (bodyJSON.gemini_generation_config) {
+        console.log('User provided gemini_generation_config, overriding default.')
+        requestBodyToGemini.generationConfig = bodyJSON.gemini_generation_config
+      }
+
+      const geminiBody = JSON.stringify(requestBodyToGemini)
       // ---------------------------------------------
 
       // Construct Gemini API URL dynamically
@@ -211,8 +233,11 @@ function bodyFromRequest(req: http.IncomingMessage) {
   })
 }
 
-// --- Conversion Helper Function --- needs to be async now
-async function convertOpenAIMessagesToGeminiContents(messages: OpenAIMessage[]): Promise<GeminiContent[]> {
+// --- Conversion Helper Function --- needs to return more info now
+async function convertOpenAIMessagesToGeminiContents(messages: OpenAIMessage[]):
+Promise<{ contents: GeminiContent[] | null, imageProcessed: boolean }> {
+  let imageProcessedOverall = false // Flag to track if any image was processed
+
   // Map messages to promises that resolve to GeminiContent or null
   const contentPromises = messages.map(async (message): Promise<GeminiContent | null> => {
     let role: 'user' | 'model' = 'user'
@@ -250,6 +275,8 @@ async function convertOpenAIMessagesToGeminiContents(messages: OpenAIMessage[]):
           // Add text part first, then image part
           parts.push({ text: textContent })
           parts.push({ inlineData: { mimeType, data: imageBase64 } })
+          // ----> Set the overall flag if successful <----
+          imageProcessedOverall = true
         }
         catch (error: any) {
           console.error(`Error processing image URL ${imageUrl}:`, error)
@@ -298,11 +325,13 @@ async function convertOpenAIMessagesToGeminiContents(messages: OpenAIMessage[]):
   }) // End of messages.map
 
   // Wait for all image fetching/conversion promises to settle
-  // Promise.allSettled might be safer if you want partial success
   const settledContents = await Promise.all(contentPromises)
 
-  // Filter out nulls (from errors or empty parts) and return the valid GeminiContent array
-  return settledContents.filter((content): content is GeminiContent => content !== null)
+  // Filter out nulls (from errors or empty parts) and get the valid GeminiContent array
+  const finalContents = settledContents.filter((content): content is GeminiContent => content !== null)
+
+  // Return both the contents and the flag indicating if any image was processed
+  return { contents: finalContents, imageProcessed: imageProcessedOverall }
 }
 
 // --- End Conversion Helper ---
