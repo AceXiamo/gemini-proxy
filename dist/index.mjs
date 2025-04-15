@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { Buffer } from 'node:buffer';
 import fetch from 'node-fetch';
 
 const BASE_API = `https://generativelanguage.googleapis.com/v1beta/models`;
@@ -31,19 +32,33 @@ const server = http.createServer(async (req, res) => {
       }
       const model = bodyJSON.model;
       if (!model) {
-        sendErr(res, '\u{1F4A3} Missing "model" field in request body! This proxy requires it to determine the target Gemini model URL.', 400);
+        sendErr(res, '\u{1F4A3} Missing "model" field in request body!', 400);
         return;
       }
-      if (!bodyJSON.contents) {
-        sendErr(res, '\u{1F4A3} Invalid request body format. Expecting Gemini native format with a "contents" field.', 400);
+      if (!Array.isArray(bodyJSON.messages)) {
+        sendErr(res, '\u{1F4A3} Missing or invalid "messages" array in request body!', 400);
         return;
       }
+      let geminiContents;
+      try {
+        geminiContents = await convertOpenAIMessagesToGeminiContents(bodyJSON.messages);
+      } catch (conversionError) {
+        console.error("Error during message conversion:", conversionError);
+        const errorMessage = conversionError instanceof Error ? conversionError.message : "Error processing message content";
+        sendErr(res, `\u{1F4A3} ${errorMessage}`, 400);
+        return;
+      }
+      geminiContents = geminiContents.filter((content) => content !== null);
+      const geminiBody = JSON.stringify({
+        contents: geminiContents
+        // TODO: Optionally map other parameters like temperature, max_tokens
+        // generationConfig: { ... }
+      });
       const geminiUrl = `${BASE_API}/${model}:generateContent?key=${apiKey}`;
       const result2 = await fetch(geminiUrl, {
         method: "POST",
-        body: bodyString,
-        // Forward the original request body (which includes the 'model' field)
-        // Gemini API should ignore the extra 'model' field.
+        body: geminiBody,
+        // Use the converted Gemini format body
         headers: {
           "Content-Type": "application/json"
         }
@@ -131,6 +146,65 @@ function bodyFromRequest(req) {
     req.on("end", () => resolve(body));
     req.on("error", reject);
   });
+}
+async function convertOpenAIMessagesToGeminiContents(messages) {
+  const contentPromises = messages.map(async (message) => {
+    let role = "user";
+    if (message.role === "assistant")
+      role = "model";
+    else if (message.role === "system")
+      role = "user";
+    const parts = [];
+    let processedAsImage = false;
+    if (typeof message.content === "string" && message.content.startsWith("#image#split#")) {
+      const partsRaw = message.content.split("#split#");
+      if (partsRaw.length === 3) {
+        const imageUrl = partsRaw[1];
+        const textContent = partsRaw[2];
+        processedAsImage = true;
+        try {
+          console.log(`Fetching image from URL: ${imageUrl}`);
+          const imageResponse = await fetch(imageUrl);
+          if (!imageResponse.ok) {
+            throw new Error(`Failed to fetch image: ${imageResponse.status} ${imageResponse.statusText} from ${imageUrl}`);
+          }
+          const mimeType = imageResponse.headers.get("content-type") || "application/octet-stream";
+          const imageBuffer = await imageResponse.arrayBuffer();
+          const imageBase64 = Buffer.from(imageBuffer).toString("base64");
+          console.log(`Successfully fetched and encoded image. MimeType: ${mimeType}, Base64 Length: ${imageBase64.length}`);
+          parts.push({ text: textContent });
+          parts.push({ inlineData: { mimeType, data: imageBase64 } });
+        } catch (error) {
+          console.error(`Error processing image URL ${imageUrl}:`, error);
+          return null;
+        }
+      }
+    }
+    if (!processedAsImage) {
+      if (typeof message.content === "string") {
+        parts.push({ text: message.content });
+      } else if (Array.isArray(message.content)) {
+        message.content.forEach((item) => {
+          if (item.type === "text" && typeof item.text === "string") {
+            parts.push({ text: item.text });
+          } else if (item.type === "image_url" && item.image_url && typeof item.image_url.url === "string") {
+            console.warn("Standard OpenAI image_url detected. Passing URL as text.");
+            parts.push({ text: `Image URL: ${item.image_url.url}` });
+          }
+        });
+      } else {
+        console.warn(`Unsupported message content type: ${typeof message.content}. Skipping content.`);
+      }
+    }
+    if (parts.length > 0) {
+      return { role, parts };
+    } else {
+      console.warn("Message resulted in empty parts, filtering out.");
+      return null;
+    }
+  });
+  const settledContents = await Promise.all(contentPromises);
+  return settledContents.filter((content) => content !== null);
 }
 server.listen(80, () => {
   console.log("Server listening on port 80");
