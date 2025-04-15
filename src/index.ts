@@ -4,6 +4,26 @@ import fetch from 'node-fetch'
 const BASE_API = `https://generativelanguage.googleapis.com/v1beta/models`
 // const API = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=` // Keep original for reference or specific use
 
+// Define simple interfaces for type safety
+interface OpenAIMessage {
+  role: 'user' | 'assistant' | 'system'
+  content: string | any // Keep 'any' for now to handle potential complex content
+}
+
+interface GeminiPart {
+  text?: string
+  inlineData?: {
+    mimeType: string
+    data: string
+  }
+  // Add other part types like fileData if needed
+}
+
+interface GeminiContent {
+  role: 'user' | 'model'
+  parts: GeminiPart[]
+}
+
 const server = http.createServer(async (req, res) => {
   // Set CORS headers for all responses, including OPTIONS
   res.setHeader('Access-Control-Allow-Origin', '*')
@@ -31,7 +51,14 @@ const server = http.createServer(async (req, res) => {
     if (isOpenAIPath) {
       const apiKey = keyFromHeader(req.headers.authorization)
       const bodyString = await bodyFromRequest(req)
-      const bodyJSON = JSON.parse(bodyString)
+      let bodyJSON: any
+      try {
+        bodyJSON = JSON.parse(bodyString)
+      }
+      catch (error) {
+        sendErr(res, '💣 Invalid JSON received in request body!', 400)
+        return
+      }
       const model = bodyJSON.model // Extract model from request body
 
       if (!model) {
@@ -39,12 +66,27 @@ const server = http.createServer(async (req, res) => {
         return
       }
 
+      // --- Convert OpenAI messages to Gemini contents ---
+      if (!Array.isArray(bodyJSON.messages)) {
+        sendErr(res, '💣 Missing or invalid "messages" array in request body!', 400)
+        return
+      }
+
+      const geminiContents: GeminiContent[] = convertOpenAIMessagesToGeminiContents(bodyJSON.messages)
+
+      const geminiBody = JSON.stringify({
+        contents: geminiContents,
+        // TODO: Optionally map other parameters like temperature, max_tokens
+        // generationConfig: { ... }
+      })
+      // ---------------------------------------------
+
       // Construct Gemini API URL dynamically
       const geminiUrl = `${BASE_API}/${model}:generateContent?key=${apiKey}`
 
       const result = await fetch(geminiUrl, {
         method: 'POST',
-        body: bodyString, // Forward the original OpenAI format body
+        body: geminiBody, // Use the converted Gemini format body
         headers: {
           'Content-Type': 'application/json',
         },
@@ -153,6 +195,48 @@ function bodyFromRequest(req: http.IncomingMessage) {
     req.on('error', reject)
   })
 }
+
+// --- Conversion Helper Function ---
+function convertOpenAIMessagesToGeminiContents(messages: OpenAIMessage[]): GeminiContent[] {
+  return messages.map((message) => {
+    let role: 'user' | 'model' = 'user' // Default to user
+    if (message.role === 'assistant')
+      role = 'model'
+    // Note: Gemini API doesn't have a distinct 'system' role in the contents array.
+    // System prompts are often handled as the first part of the 'user' turn
+    // or via specific configuration. We map 'system' to 'user' here.
+    else if (message.role === 'system')
+      role = 'user'
+    // Could potentially prepend text like "System Prompt: " to the content
+
+    const parts: GeminiPart[] = [] // Use const as parts array is not reassigned, only mutated
+    if (typeof message.content === 'string') {
+      parts.push({ text: message.content })
+    }
+    // Basic handling for OpenAI vision format (array content)
+    else if (Array.isArray(message.content)) {
+      message.content.forEach((item) => {
+        if (item.type === 'text' && typeof item.text === 'string') {
+          parts.push({ text: item.text })
+        }
+        // Rudimentary image URL handling: pass URL as text
+        // For full image support, fetch URL, base64 encode, and create inlineData part
+        else if (item.type === 'image_url' && item.image_url && typeof item.image_url.url === 'string') {
+          console.warn('Image URL detected. Passing URL as text. Full image processing not implemented.')
+          parts.push({ text: `Image URL: ${item.image_url.url}` })
+        }
+      })
+    }
+    // Handle other potential content types if necessary
+    else {
+      console.warn(`Unsupported message content type: ${typeof message.content}. Skipping content.`)
+    }
+
+    return { role, parts }
+  }).filter(content => content.parts.length > 0) // Filter out messages that couldn't be converted
+}
+
+// --- End Conversion Helper ---
 
 server.listen(80, () => {
   console.log('Server listening on port 80')

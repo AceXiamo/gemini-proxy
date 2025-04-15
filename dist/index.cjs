@@ -29,17 +29,33 @@ const server = http__default.createServer(async (req, res) => {
     if (isOpenAIPath) {
       const apiKey = keyFromHeader(req.headers.authorization);
       const bodyString = await bodyFromRequest(req);
-      const bodyJSON = JSON.parse(bodyString);
+      let bodyJSON;
+      try {
+        bodyJSON = JSON.parse(bodyString);
+      } catch (error) {
+        sendErr(res, "\u{1F4A3} Invalid JSON received in request body!", 400);
+        return;
+      }
       const model = bodyJSON.model;
       if (!model) {
         sendErr(res, '\u{1F4A3} Missing "model" field in request body!', 400);
         return;
       }
+      if (!Array.isArray(bodyJSON.messages)) {
+        sendErr(res, '\u{1F4A3} Missing or invalid "messages" array in request body!', 400);
+        return;
+      }
+      const geminiContents = convertOpenAIMessagesToGeminiContents(bodyJSON.messages);
+      const geminiBody = JSON.stringify({
+        contents: geminiContents
+        // TODO: Optionally map other parameters like temperature, max_tokens
+        // generationConfig: { ... }
+      });
       const geminiUrl = `${BASE_API}/${model}:generateContent?key=${apiKey}`;
       const result2 = await fetch__default(geminiUrl, {
         method: "POST",
-        body: bodyString,
-        // Forward the original OpenAI format body
+        body: geminiBody,
+        // Use the converted Gemini format body
         headers: {
           "Content-Type": "application/json"
         }
@@ -127,6 +143,31 @@ function bodyFromRequest(req) {
     req.on("end", () => resolve(body));
     req.on("error", reject);
   });
+}
+function convertOpenAIMessagesToGeminiContents(messages) {
+  return messages.map((message) => {
+    let role = "user";
+    if (message.role === "assistant")
+      role = "model";
+    else if (message.role === "system")
+      role = "user";
+    const parts = [];
+    if (typeof message.content === "string") {
+      parts.push({ text: message.content });
+    } else if (Array.isArray(message.content)) {
+      message.content.forEach((item) => {
+        if (item.type === "text" && typeof item.text === "string") {
+          parts.push({ text: item.text });
+        } else if (item.type === "image_url" && item.image_url && typeof item.image_url.url === "string") {
+          console.warn("Image URL detected. Passing URL as text. Full image processing not implemented.");
+          parts.push({ text: `Image URL: ${item.image_url.url}` });
+        }
+      });
+    } else {
+      console.warn(`Unsupported message content type: ${typeof message.content}. Skipping content.`);
+    }
+    return { role, parts };
+  }).filter((content) => content.parts.length > 0);
 }
 server.listen(80, () => {
   console.log("Server listening on port 80");
