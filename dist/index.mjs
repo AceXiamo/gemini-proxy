@@ -1,22 +1,65 @@
 import http from 'node:http';
 import fetch from 'node-fetch';
 
-const API = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=`;
+const BASE_API = `https://generativelanguage.googleapis.com/v1beta/models`;
 const server = http.createServer(async (req, res) => {
-  res.writeHead(200, {
-    "Content-Type": "application/json",
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type"
-  });
-  if (req.method !== "POST") {
-    sendErr(res, "\u{1F4A3} Only POST method allowed!", 405);
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  if (req.method === "OPTIONS") {
+    res.writeHead(204);
+    res.end();
     return;
   }
+  const url = req.url || "/";
+  const isLegacyPath = url.startsWith("/?key=") || url === "/";
+  const isOpenAIPath = url.startsWith("/v1/chat/completions");
   try {
+    if (req.method !== "POST" && (isLegacyPath || isOpenAIPath)) {
+      sendErr(res, "\u{1F4A3} Only POST method allowed for this endpoint!", 405);
+      return;
+    }
+    if (isOpenAIPath) {
+      const apiKey = keyFromHeader(req.headers.authorization);
+      const bodyString = await bodyFromRequest(req);
+      const bodyJSON = JSON.parse(bodyString);
+      const model = bodyJSON.model;
+      if (!model) {
+        sendErr(res, '\u{1F4A3} Missing "model" field in request body!', 400);
+        return;
+      }
+      const geminiUrl = `${BASE_API}/${model}:generateContent?key=${apiKey}`;
+      const result2 = await fetch(geminiUrl, {
+        method: "POST",
+        body: bodyString,
+        // Forward the original OpenAI format body
+        headers: {
+          "Content-Type": "application/json"
+        }
+      });
+      if (result2.body) {
+        res.writeHead(result2.status, { "Content-Type": "application/json" });
+        result2.body.pipe(res);
+      } else {
+        res.writeHead(result2.status, { "Content-Type": "application/json" });
+        res.end();
+      }
+      return;
+    }
+    if (!isLegacyPath && !isOpenAIPath) {
+      sendErr(res, "\u{1F4A3} Unknown path!", 404);
+      return;
+    }
+    res.writeHead(200, {
+      "Content-Type": "application/json"
+      // CORS headers are already set above
+    });
     const body = await bodyFromRequest(req);
     const key = keyFromURl(req.url || "");
-    const result = await fetch(API + key, {
+    const legacyModel = "gemini-1.5-flash";
+    const legacyApiUrl = `${BASE_API}/${legacyModel}:generateContent?key=${key}`;
+    const result = await fetch(legacyApiUrl, {
+      // Use the constructed legacy URL
       method: "POST",
       body,
       headers: {
@@ -26,21 +69,49 @@ const server = http.createServer(async (req, res) => {
     const json = await result.json();
     res.end(JSON.stringify(json));
   } catch (e) {
-    const { message } = e;
-    sendErr(res, `\u{1F4A3} ${message}`);
+    let message = "\u{1F4A3} An unknown error occurred";
+    let statusCode = 500;
+    if (e instanceof Error)
+      message = `\u{1F4A3} ${e.message}`;
+    else if (typeof e === "string")
+      message = `\u{1F4A3} ${e}`;
+    if (message.includes("API key not valid") || message.includes("API key invalid"))
+      statusCode = 401;
+    else if (message.includes("Invalid JSON"))
+      statusCode = 400;
+    else if (message.includes("timed out"))
+      statusCode = 504;
+    sendErr(res, message, statusCode);
   }
 });
-function sendErr(res, msg = "\u{1F4A3}", code = 500) {
-  res.statusCode = 500;
-  res.end(`{
-    "code": ${code},
-    "message": "${msg}",
-  }`);
+function sendErr(res, msg = "\u{1F4A3} Internal Server Error", code = 500) {
+  if (!res.headersSent) {
+    res.writeHead(code, {
+      "Content-Type": "application/json"
+      // CORS headers are already set at the beginning
+    });
+  }
+  res.end(JSON.stringify({
+    // Use JSON.stringify for consistent JSON error response
+    error: {
+      // Nest details under 'error' key, common practice
+      code,
+      // Use property shorthand
+      message: msg
+    }
+  }));
 }
 function keyFromURl(url) {
-  if (!url.includes("?") || !url.includes("key="))
+  const params = new URLSearchParams(url.split("?")[1] || "");
+  const key = params.get("key");
+  if (!key)
     throw new Error("add param key to url!");
-  return url.split("?")[1].split("key=")[1];
+  return key;
+}
+function keyFromHeader(authHeader) {
+  if (!authHeader || !authHeader.startsWith("Bearer "))
+    throw new Error('\u{1F4A3} Missing or invalid Authorization header! Format: "Bearer YOUR_API_KEY"');
+  return authHeader.substring(7);
 }
 function bodyFromRequest(req) {
   return new Promise((resolve, reject) => {
