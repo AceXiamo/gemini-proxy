@@ -249,37 +249,62 @@ Promise<{ contents: GeminiContent[] | null, imageProcessed: boolean }> {
     const parts: GeminiPart[] = []
     let processedAsImage = false
 
-    // Check for the custom image format: #image#split#{url}#split#{text}
+    // Check for the custom image format: #image#split#{url/base64}#split#{text}
     if (typeof message.content === 'string' && message.content.startsWith('#image#split#')) {
       const partsRaw = message.content.split('#split#')
       if (partsRaw.length === 3) {
-        const imageUrl = partsRaw[1]
+        const imageSource = partsRaw[1]
         const textContent = partsRaw[2]
         processedAsImage = true
 
         try {
-          console.log(`Fetching image from URL: ${imageUrl}`)
-          const imageResponse: Response = await fetch(imageUrl)
+          // 检查是否为 base64 格式的图片数据
+          if (imageSource.startsWith('data:image/')) {
+            // 处理 base64 格式的图片
+            console.log('Processing base64 image data')
 
-          if (!imageResponse.ok) {
-            // Throw an error that includes the status text
-            throw new Error(`Failed to fetch image: ${imageResponse.status} ${imageResponse.statusText} from ${imageUrl}`)
+            // 从 data URL 中提取 MIME 类型和 base64 数据
+            const matches = imageSource.match(/^data:([^;]+);base64,(.+)$/)
+
+            if (!matches || matches.length !== 3)
+              throw new Error('Invalid base64 image format. Expected format: data:image/xxx;base64,xxx')
+
+            const mimeType = matches[1]
+            const imageBase64 = matches[2]
+
+            console.log(`Successfully processed base64 image. MimeType: ${mimeType}, Base64 Length: ${imageBase64.length}`)
+
+            // 添加文本部分和图片部分
+            parts.push({ text: textContent })
+            parts.push({ inlineData: { mimeType, data: imageBase64 } })
+
+            // 设置图片处理标志
+            imageProcessedOverall = true
           }
+          else {
+            // 处理图片 URL
+            console.log(`Fetching image from URL: ${imageSource}`)
+            const imageResponse: Response = await fetch(imageSource)
 
-          const mimeType = imageResponse.headers.get('content-type') || 'application/octet-stream' // Get MIME type or default
-          const imageBuffer = await imageResponse.arrayBuffer()
-          const imageBase64 = Buffer.from(imageBuffer).toString('base64')
+            if (!imageResponse.ok)
+              // Throw an error that includes the status text
+              throw new Error(`Failed to fetch image: ${imageResponse.status} ${imageResponse.statusText} from ${imageSource}`)
 
-          console.log(`Successfully fetched and encoded image. MimeType: ${mimeType}, Base64 Length: ${imageBase64.length}`)
+            const mimeType = imageResponse.headers.get('content-type') || 'application/octet-stream' // Get MIME type or default
+            const imageBuffer = await imageResponse.arrayBuffer()
+            const imageBase64 = Buffer.from(imageBuffer).toString('base64')
 
-          // Add text part first, then image part
-          parts.push({ text: textContent })
-          parts.push({ inlineData: { mimeType, data: imageBase64 } })
-          // ----> Set the overall flag if successful <----
-          imageProcessedOverall = true
+            console.log(`Successfully fetched and encoded image. MimeType: ${mimeType}, Base64 Length: ${imageBase64.length}`)
+
+            // Add text part first, then image part
+            parts.push({ text: textContent })
+            parts.push({ inlineData: { mimeType, data: imageBase64 } })
+            // ----> Set the overall flag if successful <----
+            imageProcessedOverall = true
+          }
         }
         catch (error: any) {
-          console.error(`Error processing image URL ${imageUrl}:`, error)
+          console.error(`Error processing image ${imageSource}:`, error)
           // Decide how to handle image fetching errors.
           // Option 1: Skip the image, only include text (could be confusing)
           // parts.push({ text: `${textContent} (Error fetching image: ${error.message})` });

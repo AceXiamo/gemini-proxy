@@ -179,24 +179,36 @@ async function convertOpenAIMessagesToGeminiContents(messages) {
     if (typeof message.content === "string" && message.content.startsWith("#image#split#")) {
       const partsRaw = message.content.split("#split#");
       if (partsRaw.length === 3) {
-        const imageUrl = partsRaw[1];
+        const imageSource = partsRaw[1];
         const textContent = partsRaw[2];
         processedAsImage = true;
         try {
-          console.log(`Fetching image from URL: ${imageUrl}`);
-          const imageResponse = await fetch__default(imageUrl);
-          if (!imageResponse.ok) {
-            throw new Error(`Failed to fetch image: ${imageResponse.status} ${imageResponse.statusText} from ${imageUrl}`);
+          if (imageSource.startsWith("data:image/")) {
+            console.log("Processing base64 image data");
+            const matches = imageSource.match(/^data:([^;]+);base64,(.+)$/);
+            if (!matches || matches.length !== 3)
+              throw new Error("Invalid base64 image format. Expected format: data:image/xxx;base64,xxx");
+            const mimeType = matches[1];
+            const imageBase64 = matches[2];
+            console.log(`Successfully processed base64 image. MimeType: ${mimeType}, Base64 Length: ${imageBase64.length}`);
+            parts.push({ text: textContent });
+            parts.push({ inlineData: { mimeType, data: imageBase64 } });
+            imageProcessedOverall = true;
+          } else {
+            console.log(`Fetching image from URL: ${imageSource}`);
+            const imageResponse = await fetch__default(imageSource);
+            if (!imageResponse.ok)
+              throw new Error(`Failed to fetch image: ${imageResponse.status} ${imageResponse.statusText} from ${imageSource}`);
+            const mimeType = imageResponse.headers.get("content-type") || "application/octet-stream";
+            const imageBuffer = await imageResponse.arrayBuffer();
+            const imageBase64 = node_buffer.Buffer.from(imageBuffer).toString("base64");
+            console.log(`Successfully fetched and encoded image. MimeType: ${mimeType}, Base64 Length: ${imageBase64.length}`);
+            parts.push({ text: textContent });
+            parts.push({ inlineData: { mimeType, data: imageBase64 } });
+            imageProcessedOverall = true;
           }
-          const mimeType = imageResponse.headers.get("content-type") || "application/octet-stream";
-          const imageBuffer = await imageResponse.arrayBuffer();
-          const imageBase64 = node_buffer.Buffer.from(imageBuffer).toString("base64");
-          console.log(`Successfully fetched and encoded image. MimeType: ${mimeType}, Base64 Length: ${imageBase64.length}`);
-          parts.push({ text: textContent });
-          parts.push({ inlineData: { mimeType, data: imageBase64 } });
-          imageProcessedOverall = true;
         } catch (error) {
-          console.error(`Error processing image URL ${imageUrl}:`, error);
+          console.error(`Error processing image ${imageSource}:`, error);
           return null;
         }
       }
